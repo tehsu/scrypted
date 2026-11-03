@@ -1,5 +1,5 @@
 {
-   "name": "@scrypted/ring",
+   "name": "@tehsu/ring",
    "scripts": {
       "scrypted-setup-project": "scrypted-setup-project",
       "prescrypted-setup-project": "scrypted-package-json",
@@ -19,7 +19,7 @@
       "ring"
    ],
    "scrypted": {
-      "name": "Ring Plugin",
+      "name": "Ring Plugin (tehsu)",
       "type": "DeviceProvider",
       "interfaces": [
          "HttpRequestHandler",
@@ -45,5 +45,5 @@
       "got": "11.8.6",
       "socket.io-client": "^2.5.0"
    },
-   "version": "0.0.145"
+   "version": "0.0.146"
 }

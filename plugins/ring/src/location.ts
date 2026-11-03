@@ -1,9 +1,14 @@
+import { TimeoutError, timeoutPromise } from '@scrypted/common/src/promise-utils';
 import sdk, { Battery, Brightness, Device, DeviceProvider, EntrySensor, FloodSensor, Lock, LockState, MotionSensor, OnOff, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, SecuritySystem, SecuritySystemMode, TamperSensor } from '@scrypted/sdk';
 import { RingCameraDevice } from './camera';
 import RingPlugin from './main';
 import { Location, LocationMode, RingCamera, RingDevice, RingDeviceCategory, RingDeviceData, RingDeviceType } from './ring-client-api';
 
 const { deviceManager } = sdk;
+
+// how long to wait for the alarm/beams hub to return its device list before
+// giving up and continuing with only the cameras.
+const HUB_DEVICES_TIMEOUT = 60000;
 
 class RingLock extends ScryptedDeviceBase implements Battery, Lock {
     device: RingDevice
@@ -178,11 +183,71 @@ export class RingLocationDevice extends ScryptedDeviceBase implements DeviceProv
             this.location.getLocationMode();
         }
 
-        this.discoverDevices();
+        this.discoverDevices()
+            .catch(e => this.console.error('location device discovery failed', e));
     }
 
     async discoverDevices() {
         this.locationDevices.clear();
+        const cameraDevices = this.buildCameraDevices();
+
+        if (!this.location.hasHubs) {
+            await this.syncDevices(cameraDevices);
+            return;
+        }
+
+        // Cameras come from the REST api, but hub devices (sensors, lights, locks) come over the
+        // hub websocket, which never resolves if a hub is offline/on cellular backup, and retries
+        // forever if the socket can't connect. Publish the cameras first without removing any
+        // existing hub devices, so a stalled hub can't prevent cameras from being discovered.
+        this.console.log(`discovered ${cameraDevices.length} camera(s), loading devices from the Ring hub.`);
+        for (const device of cameraDevices) {
+            await deviceManager.onDeviceDiscovered(device);
+        }
+        await this.probeDevices(cameraDevices);
+
+        const hubDevicesPromise = this.location.getDevices();
+        let ringDevices: RingDevice[];
+        try {
+            ringDevices = await timeoutPromise(HUB_DEVICES_TIMEOUT, hubDevicesPromise);
+        }
+        catch (e) {
+            if (e instanceof TimeoutError) {
+                this.console.warn('Timed out waiting for the Ring hub device list. The hub may be offline or on cellular backup. Hub devices will be synced once the hub responds.');
+                hubDevicesPromise
+                    .then(ringDevices => this.syncDevices([...cameraDevices, ...this.buildHubDevices(ringDevices)]))
+                    .catch(e => this.console.error('Ring hub device discovery failed', e));
+            }
+            else {
+                this.console.error('Ring hub device discovery failed. Only cameras were discovered.', e);
+            }
+            return;
+        }
+
+        await this.syncDevices([...cameraDevices, ...this.buildHubDevices(ringDevices)]);
+    }
+
+    async syncDevices(devices: Device[]) {
+        await deviceManager.onDevicesChanged({
+            providerNativeId: this.location.id,
+            devices,
+        });
+        await this.probeDevices(devices);
+    }
+
+    async probeDevices(devices: Device[]) {
+        // probe to intiailize location devices
+        for (const device of devices) {
+            try {
+                await this.getDevice(device.nativeId);
+            }
+            catch (e) {
+                this.console.error('failed to initialize device', device.name, e);
+            }
+        }
+    }
+
+    buildCameraDevices() {
         const devices: Device[] = [];
         const cameras = this.location.cameras;
         for (const camera of cameras) {
@@ -224,8 +289,11 @@ export class RingLocationDevice extends ScryptedDeviceBase implements DeviceProv
             devices.push(device);
             this.locationDevices.set(nativeId, camera);
         }
+        return devices;
+    }
 
-        const locationDevices = await this.location.getDevices();
+    buildHubDevices(locationDevices: RingDevice[]) {
+        const devices: Device[] = [];
         for (const locationDevice of locationDevices) {
             const data: RingDeviceData = locationDevice.data;
             let nativeId: string;
@@ -313,16 +381,7 @@ export class RingLocationDevice extends ScryptedDeviceBase implements DeviceProv
             devices.push(device);
             this.locationDevices.set(nativeId, locationDevice);
         }
-
-        await deviceManager.onDevicesChanged({
-            providerNativeId: this.location.id,
-            devices: devices,
-        });
-
-        // probe to intiailize location devices
-        for (const device of devices) {
-            await this.getDevice(device.nativeId);
-        };
+        return devices;
     }
 
     async getDevice(nativeId: string) {
