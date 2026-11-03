@@ -197,6 +197,8 @@ class RingPlugin extends ScryptedDeviceBase implements DeviceProvider, Settings,
             }
             catch (e) {
                 if (this.loginClient.promptFor2fa) {
+                    this.api?.disconnect();
+                    this.api = undefined;
                     this.log.a('Check your email or texts for your Ring login code, then enter it into the Two Factor Code setting to complete login.');
                     return;
                 }
@@ -228,8 +230,17 @@ class RingPlugin extends ScryptedDeviceBase implements DeviceProvider, Settings,
 
     async discoverDevices() {
         await this.tryLogin();
+        if (!this.api) {
+            // login is waiting on a two factor code.
+            this.console.log('login incomplete, waiting for two factor code before discovery');
+            return;
+        }
         this.console.log('login success, trying discovery');
         this.locations = await this.api.getLocations();
+        this.console.log(`found ${this.locations.length} location(s):`, this.locations.map(l => `${l.name} (${l.id}): ${l.cameras.length} camera(s)`).join(', '));
+        // location devices hold onto the Location objects from the previous api instance,
+        // which is disconnected when logging in again. recreate them so they rediscover.
+        this.devices.clear();
 
         const locationDevices: Device[] = this.locations.map(location => {
             const interfaces = [
