@@ -1,5 +1,5 @@
 {
-   "name": "@tehsu/scrypted-ring",
+   "name": "@tehsu/ring",
    "scripts": {
       "scrypted-setup-project": "scrypted-setup-project",
       "prescrypted-setup-project": "scrypted-package-json",
